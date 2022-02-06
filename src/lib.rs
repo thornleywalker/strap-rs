@@ -4,9 +4,11 @@ mod tests;
 use aes::Aes128;
 use block_modes::{block_padding::Pkcs7, BlockMode, Cbc};
 use hmac::{Hmac, Mac};
+use pnet;
 use rand;
 use sha2::Sha256;
-use std::{net, time::SystemTime};
+use std::time::SystemTime;
+use zfec_rs::Fec;
 
 pub enum Error {
     DataLen,
@@ -82,11 +84,58 @@ pub fn send(
     }
 
     // add FEC
-    let k: f32 = (all_data.len() / TOTAL_DATA) as f32;
-    let m: u32 = ((k * (1.0 / (1.0 - possible_loss.as_float()))).round() / 2.0).ceil() as u32;
-    // TODO: implement Zfec
+    let k = (all_data.len() / TOTAL_DATA) as usize;
+    let m = ((k as f32 * (1.0 / (1.0 - possible_loss.as_float()))).round() / 2.0).ceil() as usize;
+    let fec = Fec::new(k, m);
 
+    let encoded_data = fec.encode(&mut all_data);
+    let all_encoded_data = vec![];
+
+    for chunk in encoded_data {
+        all_encoded_data.append(&mut chunk);
+    }
+
+    if all_encoded_data.len() % TOTAL_DATA != 0 {
+        return Err(Error::DataLen);
+    }
+
+    let total_packets = all_encoded_data.len() / TOTAL_DATA;
+
+    if total_packets % 2 != 0 {
+        return Err(Error::DataLen);
+    }
+    if total_packets >= 128 {
+        return Err(Error::DataLen);
+    }
+
+    // iiii ii10 fnnt tttt t000 0000
+    let header = (id << 18) as u32
+        + (0x10 << 16) as u32
+        + ((send_flag as u32) << 15)
+        + ((possible_loss as u32) << 13)
+        + ((total_packets as u32 >> 1) << 7);
+
+    for (sequence, group) in grouper(&all_encoded_data, TOTAL_DATA).iter().enumerate() {
+        let packet_header = header + sequence as u32;
+
+        let src = pnet::datalink::MacAddr(
+            ((packet_header & 0xFF0000) >> 16) as u8,
+            ((packet_header & 0x00FF00) >> 8) as u8,
+            ((packet_header & 0x0000FF) >> 0) as u8,
+            group[0],
+            group[1],
+            group[2],
+        );
+        let dst = pnet::datalink::MacAddr(0x33, 0x33, group[3], group[4], group[5], group[6]);
+    }
     Ok(())
+}
+fn grouper(data: &Vec<u8>, n: usize) -> Vec<Vec<u8>> {
+    let mut ret_vec = vec![];
+    for i in 0..data.len() / n {
+        ret_vec.push(data[i * n..(i + 1) * n].to_vec());
+    }
+    ret_vec
 }
 fn generate_iv() -> Vec<u8> {
     let mut ret_array = vec![];

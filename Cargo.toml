@@ -13,4 +13,5 @@ rand = "0.8"
 block-modes = "0.8"
 hmac = "0.12"
 sha2 = "0.10.1"
+pnet = "0.29"
 zfec-rs = { path = "../zfec-rs" }
